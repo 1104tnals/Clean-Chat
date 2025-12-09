@@ -100,8 +100,7 @@ int main(int argc, char *argv[])
     if (listen(serv_sock, 5) == -1)
         error_handling("listen() error");
     
-    printf(">> Clean-Chat Sentinel Started (Port: %s)\n", argv[1]);
-    printf(">> Security: TLS 1.3 | Filter: %d words loaded.\n", bad_word_count);
+    printf("\n============ Clean-Chat Started <Port: %s> ============\n\n", argv[1]);
 
     while (1)
     {
@@ -184,7 +183,6 @@ void load_bad_words(const char *filename) {
     }
 
     fclose(fp);
-    printf("[+] Bulk Data Loaded: %d bad words ready.\n", bad_word_count);
 }
 
 // -----------------------------------------------------------
@@ -219,6 +217,7 @@ int filter_logic(char *msg)
 // -----------------------------------------------------------
 // [핵심 기능 3] 클라이언트 핸들러 & 3진 아웃 로직
 // -----------------------------------------------------------
+// [수정됨] 순서 변경: 메시지 전송 -> 시스템 경고
 void *handle_clnt(void *arg)
 {
     ClientInfo *clnt = (ClientInfo*)arg;
@@ -228,33 +227,37 @@ void *handle_clnt(void *arg)
 
     while ((str_len = SSL_read(clnt->ssl, msg, sizeof(msg))) > 0)
     {
-        msg[str_len] = 0; // Null-terminate
+        msg[str_len] = 0;
 
-        // 필터링 수행 및 경고 로직
-        if (filter_logic(msg)) 
+        // 1. 필터링 수행 (결과를 변수에 저장)
+        int is_abusive = filter_logic(msg);
+
+        // 2. [순서 변경] 채팅방에 메시지 먼저 전송 (필터링된 내용)
+        // 이렇게 해야 사용자 화면에 [**]가 먼저 뜨고, 그 아래에 경고문이 뜹니다.
+        send_msg(msg, strlen(msg));
+
+        // 3. 욕설이 감지된 경우 후속 처리 (경고 및 차단)
+        if (is_abusive) 
         {
-            clnt->warning_count++; // 경고 1회 추가
+            clnt->warning_count++;
             
             if (clnt->warning_count >= 3) 
             {
-                // [3진 아웃] 차단 메시지 전송 및 루프 탈출
-                sprintf(sys_msg, "%s[SYSTEM] 경고(3/3): 욕설 사용 누적으로 차단됩니다. Bye!%s\n", COLOR_RED, COLOR_RESET);
+                // [3진 아웃] 차단 메시지 전송
+                sprintf(sys_msg, "%s[SYSTEM] WARNING(3/3): 욕설이 3회 이상 감지되어 차단됩니다.%s\n", COLOR_RED, COLOR_RESET);
                 SSL_write(clnt->ssl, sys_msg, strlen(sys_msg));
                 
-                printf("!!! Banned Client: %s (Strikes: 3)\n", inet_ntoa(clnt->address.sin_addr));
-                break; // While loop 탈출 -> 연결 종료
+                printf("%s[!] Banned User: %s%s\n", COLOR_RED, inet_ntoa(clnt->address.sin_addr), COLOR_RESET);
+                break; // 루프 탈출 -> 연결 종료
             }
             else 
             {
                 // [경고] 경고 메시지 전송
-                sprintf(sys_msg, "%s[SYSTEM] 경고(%d/3): 비속어가 감지되었습니다. 바른말을 써주세요.%s\n", 
+                sprintf(sys_msg, "%s[SYSTEM] WARNING(%d/3): 비속어가 감지되었습니다.%s\n", 
                         COLOR_YELLOW, clnt->warning_count, COLOR_RESET);
                 SSL_write(clnt->ssl, sys_msg, strlen(sys_msg));
             }
         }
-
-        // (필터링된) 메시지 전체 전송
-        send_msg(msg, strlen(msg));
     }
 
     // --- 연결 종료 및 자원 정리 ---
@@ -269,6 +272,8 @@ void *handle_clnt(void *arg)
     clnt_cnt--;
     pthread_mutex_unlock(&mutx);
 
+    printf("%s[-] User Disconnected: %s%s\n", COLOR_YELLOW, inet_ntoa(clnt->address.sin_addr), COLOR_RESET);
+
     SSL_shutdown(clnt->ssl);
     SSL_free(clnt->ssl);
     close(clnt->socket);
@@ -276,7 +281,6 @@ void *handle_clnt(void *arg)
     
     return NULL;
 }
-
 void send_msg(char *msg, int len)
 {
     pthread_mutex_lock(&mutx);
